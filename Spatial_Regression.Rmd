@@ -1,0 +1,382 @@
+---
+title: "Spatial Regression Exercise"
+author: "Jack Kauphusman"
+date: "11/20/2019"
+output:
+  html_notebook:
+    df_print: paged
+    highlight: breezedark
+    number_sections: yes
+    rows.print: 10
+    theme: cosmo
+    toc: yes
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+  html_document:
+    df_print: paged
+    toc: yes
+  pdf_document: default
+editor_options:
+  chunk_output_type: inline
+---
+<style type="text/css">
+
+h1.title {
+  font-size: 40px;
+  font-family: "Times New Roman", Times, serif;
+  color: DarkBlue;
+  text-align: center;
+}
+h4.author { /* Header 4 - and the author and data headers use this too  */
+  font-size: 20px;
+  font-family: "Times New Roman", Times, serif;
+  color: DarkBlue;
+  text-align: center;
+}
+</style>
+
+# Intro
+
+In this exercise I will be attempting to do spatial regression analysis on Oklahoma trying to identify what is spatially correlated with child poverty.
+
+So, lets learn about Oklahoma because I know nothing about it!!
+
+![](data/flag.png)
+
+![](data/tornado.jpg)
+
+
+# Regression Analysis
+
+```{r Packages, message=FALSE, warning=FALSE}
+packages<-c("cowplot", "dplyr", "geosphere", "ggplot2", "ggExtra", "mapproj","maps", "maptools", "readxl", "rgdal", "rgeos", "sf", "sp", "spatialreg", "spdep", "tidyr", "viridis")
+sapply(packages, require, character.only=T)
+```
+
+```{r Dataset}
+data <- read.csv('./data/childpov18_southfull.csv', 
+                   colClasses = c("character", "character", "character", 
+                                  "numeric", "numeric", "numeric", "numeric",
+                                  "numeric", "numeric", "numeric", "numeric",
+                                  "numeric", "numeric", "numeric", "numeric", 
+                                  "numeric", "numeric", "numeric", "numeric",
+                                  "numeric", "numeric", "numeric", "numeric",
+                                  "numeric", "numeric", "numeric", "numeric", 
+                                  "numeric", "numeric", "numeric", "numeric",
+                                  "numeric", "numeric", "numeric", "numeric"))
+
+names(data)[names(data)=="X2016.child.poverty"] <- "child.pov.2016"
+ok_pov <- data %>% subset(State == "OK")
+```
+## Ordinary Least Squares
+
+```{r equation & OLS}
+equation <- child.pov.2016 ~ rural + urban + lnmanufacturing + lnag + 
+            lnretail + lnhealthss + lnconstruction + lnlesshs + 
+            lnunemployment + lnsinglemom + lnblack + lnhispanic + 
+            lnuninsured + lnincome_ratio + lnteenbirth + lnunmarried
+
+options(scipen = 5)
+
+ols <- lm(equation, data=ok_pov)
+summary(ols)
+```
+
+
+Soooo, unemployment and uninsured are correlated with child poverty. But, lets try some....
+
+# Spatial Regression Analysis
+
+```{r create neighbors, message=FALSE, warning=FALSE, echo=TRUE}
+#Obtain FIPS Codes by county 
+fips <- county.fips
+
+#Create county polygons
+oklahoma <- map(database = "county", regions = "oklahoma", fill=T, plot=F)
+IDs <- sub("^oklahoma,","",oklahoma$names)
+
+#Add FIPS codes to the county polygons
+fips.codes <- separate(data = fips, col = polyname, into = c("state", "county"), sep = ",")
+ok_fips <- subset(fips.codes, state=="oklahoma", select=fips)
+names <- fips.codes$county
+ok_IDs <- unique(ok_fips$fips)
+
+#Create spatial polygons
+ok_sp = map2SpatialPolygons(oklahoma,ok_fips$fips,CRS("+proj=longlat"))
+names(ok_sp@polygons) <- ok_IDs
+
+#Create neighbor weights using the queens case
+neighb.data <- poly2nb(ok_sp, queen=T)
+names(neighb.data) <- names(ok_sp@polygons)
+
+#Create list of neighbors
+cont.neighb <- nb2listw(neighb.data,style="W", zero.policy = TRUE)
+```
+
+## Moran's Correlation and LaGrange Multiplier Tests
+
+```{r morans, message=FALSE, warning=FALSE, echo=TRUE}
+lm.morantest(ols, cont.neighb)
+```
+
+The Moran's Correlation Test identified, based on the p-value, that we should use a spatial model.
+
+```{r lagrange tests, message=FALSE, warning=FALSE, echo=TRUE}
+lm.LMtests(ols, cont.neighb, test="all")
+```
+However, none of the spatial models are significant, soooo I'll just decide to keep going through the first three model types
+
+**Spatially lagged X Model**, **Spatial Lag Model**, & **Spatial Error Model**.
+
+### Spatially Lagged X Model 
+
+The SLX model accounts for the average value of neighboring X values within our model. Essentially this is a one-way interaction where potentially our neighbors have an impact on us, but that is the limit of the interactions (Gentry).
+
+```{r SLX model, message=FALSE, warning=FALSE, echo=TRUE}
+SLX.model <- lmSLX(equation, data=ok_pov, cont.neighb)
+summary(SLX.model)
+
+summary(impacts(SLX.model, cont.neighb), zstats = TRUE)[["pzmat"]]
+```
+
+A few other variables are now being shown as significant, such as teen birth in addition to unemployment and uninsured which was ID in the OLS. Also, the lagged rural variable is now significant suggesting neighbor interaction.
+
+### Spatial Lag Model
+
+The Spatial Lag Model is a global model where the dependent variable among our neighbors influences our dependent variable. Therefore there is a feedback loop that occurs where affects on our neighbor(s) y affects our y and our neighbor(s) y variable.
+
+```{r spatial lag model, message=FALSE, warning=FALSE, echo=TRUE}
+sp.lag.model <- spatialreg::lagsarlm(equation, data=ok_pov, cont.neighb)
+summary(sp.lag.model, Nagelkerke = TRUE)
+#Where Rho is the spatially lagged y multiplier
+```
+We see that the p-value (0.185) for the SLM was not significant.
+
+
+### Spatial Error Model
+
+The Spatial Error model does not include lagged dependent or independent variables, but instead includes a function of our unexplained error and that of our neighbors (gentry).
+
+
+```{r spatial err model Impacts, message=FALSE, warning=FALSE, echo=TRUE}
+sp.err.model <- spatialreg::errorsarlm(equation, data=ok_pov, cont.neighb)
+summary(sp.err.model, Nagelkerke = TRUE)
+#Where Lambda is the error multiplier
+```
+Unemployment is strongly correlated, however again the overal model is not significant, so I willl not continue with the following tests 
+
+**Soo,** 
+
+The best fit comparatively.
+
+  OLS | SLX | Model  |   Lag  | Model |   Err | Model |
+----- | ----- | ------ |----- | ----- | ------ | ------ |
+  *Adj-R<sup>2</sup>* |   *p-value* |*Adj-R<sup>2</sup>* |   *p-value* |   *R<sup>2</sup>*  |  *p-value* |   *R<sup>2</sup>* |   *p-value*  |
+0.66 | **<0.01** | 0.66 | **<0.01** | 0.74 | 0.18 | 0.74 | 0.09 |
+
+I am going to run with the **SLX Model**!
+
+# Spatial Regression; Set-up for Map
+
+
+## Creating a list of K-neighbors
+
+```{r centroids, message=FALSE, warning=FALSE, echo=TRUE}
+all.xy <- centroid(ok_sp)
+rownames(all.xy) <- ok_IDs
+colnames(all.xy) <- cbind("x","y")
+```
+
+```{r k-distance list, message=FALSE, warning=FALSE, echo=TRUE}
+#Create neighbors
+all.dist.k1 <- knn2nb(knearneigh(all.xy, k=1, longlat = TRUE))
+all.dist.k3 <- knn2nb(knearneigh(all.xy, k=3, longlat = TRUE))
+all.dist.k5 <- knn2nb(knearneigh(all.xy, k=5, longlat = TRUE))
+
+#Determine max k distance value to neighbor
+all.max.k1 <- max(unlist(nbdists(all.dist.k1, all.xy, longlat=TRUE)))
+all.max.k3 <- max(unlist(nbdists(all.dist.k3, all.xy, longlat=TRUE)))
+all.max.k5 <- max(unlist(nbdists(all.dist.k5, all.xy, longlat=TRUE)))
+
+#Calculate neighbors based on distance
+all.sp.dist.k1 <- dnearneigh(all.xy, d1=0, d2=1 * all.max.k1, longlat = TRUE)
+all.sp.dist.k3 <- dnearneigh(all.xy, d1=0, d2=1 * all.max.k3, longlat = TRUE)
+all.sp.dist.k5 <- dnearneigh(all.xy, d1=0, d2=1 * all.max.k5, longlat = TRUE)
+
+#Create neighbor list
+all.dist.neighb.k1 <- nb2listw(all.sp.dist.k1,style="W", zero.policy = TRUE)
+all.dist.neighb.k3 <- nb2listw(all.sp.dist.k3,style="W", zero.policy = TRUE)
+all.dist.neighb.k5 <- nb2listw(all.sp.dist.k5,style="W", zero.policy = TRUE)
+```
+
+## Distance SLX Model
+
+To calculate a distance SLX model for each k-distance value we will use the following:
+
+```{r dist SLX models, message=FALSE, warning=FALSE, echo=TRUE}
+all.dist.slx.k1 <- lmSLX(equation, data=ok_pov, listw = all.dist.neighb.k1)
+all.dist.slx.k3 <- lmSLX(equation, data=ok_pov, listw = all.dist.neighb.k3)
+all.dist.slx.k5 <- lmSLX(equation, data=ok_pov, listw = all.dist.neighb.k5)
+```
+
+The summary for the K=3 SLX model:
+```{r k1 lag summary, message=FALSE, warning=FALSE, include=FALSE}
+summary(all.dist.slx.k3, Nagelkerke = TRUE)
+```
+
+# Mapping
+
+Now, I will create a Spatial Regression map using the Spatial lag X Model with k3 distance comparing child poverty with unemployment!! 
+
+```{r mapping data, message=FALSE, warning=FALSE, echo=TRUE}
+dist.slx.data <- summary(all.dist.slx.k3, correlation=TRUE)
+
+dist.slx.output <- cbind.data.frame(ok_pov$FIPS,
+                               dist.slx.data$residual, 
+                               ok_pov$child.pov.2016, 
+                               ok_pov$rural,
+                               ok_pov$urban,
+                               ok_pov$lnunemployment,
+                               stringsAsFactors = FALSE)
+
+#Renaming columns
+colnames(dist.slx.output) <- c("fips","resid","childpov",
+                               "rural","urban","ln_unemployment")
+```
+
+```{r quant and rank, message=FALSE, warning=FALSE, echo=TRUE}
+#Create quantiles
+quantiles_sm <- dist.slx.output %>%
+  pull(ln_unemployment) %>%
+  quantile(probs = seq(0, 1, length.out = 4), na.rm = TRUE)
+
+quantiles_pov <- dist.slx.output %>%
+  pull(childpov) %>%
+  quantile(probs = seq(0, 1, length.out = 4), na.rm = TRUE)
+
+#Create ranks
+sm_rank <- cut(dist.slx.output$ln_unemployment,
+               breaks= quantiles_sm, 
+               labels=c("1", "2", "3"), 
+               na.rm = TRUE, 
+               include.lowest = TRUE)
+
+pov_rank <- cut(dist.slx.output$childpov, 
+                breaks= quantiles_pov, 
+                labels=c("1", "2", "3"), 
+                na.rm = TRUE,
+                include.lowest = TRUE)
+
+#Join ranks and combined column to dataset
+dist.slx.output$unemployment_score <- as.numeric(sm_rank)
+dist.slx.output$pov_score <- as.numeric(pov_rank)
+dist.slx.output$unemployment_pov <- paste(as.numeric(dist.slx.output$pov_score), 
+                         "-", 
+                         as.numeric(dist.slx.output$unemployment_score))
+```
+
+```{r bivariate legend, message=FALSE, warning=FALSE, echo=TRUE}
+legend_colors <- tibble(
+  x = c(3,2,1,3,2,1,3,2,1),
+  y = c(3,3,3,2,2,2,1,1,1),
+  z = c("#574249", "#627f8c", "#64acbe", "#985356", "#ad9ea5", "#b0d5df", "#c85a5a", "#e4acac", "#e8e8e8"))
+
+xlabel <- "Poverty,Low \u2192 High"
+xlabel <- gsub(",", "\n", xlabel)
+ylabel <- " Ln Unemployment,Low \u2192 High"
+ylabel <- gsub(",", "\n", ylabel)
+
+legend <- ggplot(legend_colors, aes(x,y)) + 
+  geom_tile(aes(fill=z)) + 
+  theme_minimal() + theme(legend.position = "none") +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank()) +
+  labs(x = xlabel, y = ylabel) + 
+  scale_fill_identity() +
+  ggtitle("Legend") +
+  theme(axis.title.y = element_text(face = "italic", hjust = 0.5, size = 8)) +
+  theme(axis.title.x = element_text(face = "italic", hjust = 0.5, size = 8)) +
+  theme(plot.title = element_text(face="bold", hjust = 0.5, size = 10))
+
+legend
+```
+
+```{r create mapping polygons, message=FALSE, warning=FALSE, echo=TRUE}
+world <- map_data("world")
+states <- map_data("state")
+counties <- map_data("county")
+
+counties$polyname <- paste(counties$region, counties$subregion, sep = ",")
+counties <- counties %>% left_join(fips, by = c("polyname" = "polyname"))
+counties$fips <- as.character(counties$fips)
+counties <- counties %>% left_join(ok_pov, by = c("fips" = "FIPS"))
+
+southern_states <- subset(states, region %in% 
+                            c("texas", "arkansas", "louisiana", "mississippi", 
+                              "alabama", "georgia", "florida", "north carolina",
+                              "south carolina", "tennessee", "oklahoma", 
+                              "kentucky", "west virginia", "virginia", 
+                              "maryland", "delaware", "district of columbia"))
+
+southern_counties <- subset(counties, region %in% 
+                              c("texas", "arkansas", "louisiana", "mississippi", 
+                                "alabama", "georgia", "florida", "north carolina",
+                                "south carolina", "tennessee", "oklahoma", 
+                                "kentucky", "west virginia", "virginia", 
+                                "maryland", "delaware", "district of columbia"))
+
+oklahoma_counties <- subset(southern_counties, region == "oklahoma")
+```
+
+```{r attach data to map, message=FALSE, warning=FALSE, echo=TRUE, results='hide'}
+#Attach the data via the FIPS column and fortify the polygon
+ok_poly <- oklahoma_counties %>% 
+  left_join(dist.slx.output, by = c("fips" = "fips")) %>%
+  fortify
+
+#Add custom color scheme based on ranks
+bivariate_color_scale <- tibble(
+  "3 - 3" = "#574249", 
+  "2 - 3" = "#627f8c",
+  "1 - 3" = "#64acbe",
+  "3 - 2" = "#985356",
+  "2 - 2" = "#ad9ea5",
+  "1 - 2" = "#b0d5df",
+  "3 - 1" = "#c85a5a",
+  "2 - 1" = "#e4acac",
+  "1 - 1" = "#e8e8e8") %>%
+  gather("group", "fill")
+
+ok_poly <- ok_poly %>% 
+  left_join(bivariate_color_scale, by = c("unemployment_pov" = "group"))
+```
+
+```{r bivariate map, message=FALSE, warning=FALSE, echo=TRUE, results='hide'}
+unemployment_pov_map <- ggplot() + 
+  geom_polygon(data = world, aes(x=long,y=lat, group=group), fill = "gray95", color = "white") +
+  geom_polygon(data = states, aes(x=long,y=lat, group=group), fill = "gray", color = "white") +
+  geom_polygon(data = ok_poly, aes(x=long, y=lat, group=group, fill = fill)) + 
+  geom_polygon(data = southern_states, aes(x=long,y=lat, group=group), fill = NA, color = "white") +
+  geom_polygon(data = oklahoma_counties, aes(x=long,y=lat, group=group), fill = NA, color = "black", size = 0.05) +
+  coord_map("conic", lat0 = 30, xlim=c(-105,-93), ylim=c(32.5,37)) +
+  scale_fill_identity() +
+  theme_grey() + theme(legend.position="bottom") + theme(legend.title.align=0.5) +
+  theme(panel.background = element_rect(fill = 'deepskyblue'),
+        panel.grid.major = element_line(colour = NA)) +
+  labs(x = "Longitude", y = "Latitude", fill = "Child Poverty", 
+       title = "Bivariate Map of Child Poverty and Unemployment Rate (Ln)") +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5))
+```
+```{r fina map, message=FALSE, warning=FALSE, echo=TRUE}
+final_map <- ggdraw() +
+  draw_plot(unemployment_pov_map, x = 0, y = 0, width = 1, height = 1) +
+  draw_plot(legend, x = 0.07, y = 0.13, width = 0.4, height = 0.4) 
+
+final_map
+```
+
+Look at that!!! Being by Arkansas is bad for buisness!
