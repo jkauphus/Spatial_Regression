@@ -166,13 +166,16 @@ summary(sp.err.model, Nagelkerke = TRUE)
 ```
 Unemployment is strongly correlated, however again the overal model is not significant, so I willl not continue with the following tests 
 
+
+# Best Model Decision
+
 **Soo,** 
 
 The best fit comparatively.
 
-  OLS | SLX | Model  |   Lag  | Model |   Err | Model |
------ | ----- | ------ |----- | ----- | ------ | ------ |
-  *Adj-R<sup>2</sup>* |   *p-value* |*Adj-R<sup>2</sup>* |   *p-value* |   *R<sup>2</sup>*  |  *p-value* |   *R<sup>2</sup>* |   *p-value*  |
+  OLS | Model | SLX | Model  |   Lag  | Model |   Err | Model |
+----- | ----- | ------ |----- | ----- | ------ | ------ | ------ |
+  *Adj-R<sup>2</sup>* |   *p-value* |*Adj-R<sup>2</sup>* |   *p-value* |*R<sup>2</sup>*  |  *p-value* |*R<sup>2</sup>* |   *p-value*  |
 0.66 | **<0.01** | 0.66 | **<0.01** | 0.74 | 0.18 | 0.74 | 0.09 |
 
 I am going to run with the **SLX Model**!
@@ -355,7 +358,7 @@ ok_poly <- ok_poly %>%
   left_join(bivariate_color_scale, by = c("unemployment_pov" = "group"))
 ```
 
-```{r bivariate map, message=FALSE, warning=FALSE, echo=TRUE, results='hide'}
+```{r bivariate map, message=FALSE, fig.width= 10, fig.height=10, warning=FALSE, echo=TRUE, results='hide'}
 unemployment_pov_map <- ggplot() + 
   geom_polygon(data = world, aes(x=long,y=lat, group=group), fill = "gray95", color = "white") +
   geom_polygon(data = states, aes(x=long,y=lat, group=group), fill = "gray", color = "white") +
@@ -371,10 +374,11 @@ unemployment_pov_map <- ggplot() +
        title = "Bivariate Map of Child Poverty and Unemployment Rate (Ln)") +
   theme(plot.title = element_text(face = "bold", hjust = 0.5))
 ```
+
 ```{r fina map, message=FALSE, warning=FALSE, echo=TRUE}
 final_map <- ggdraw() +
   draw_plot(unemployment_pov_map, x = 0, y = 0, width = 1, height = 1) +
-  draw_plot(legend, x = 0.07, y = 0.13, width = 0.4, height = 0.4) 
+  draw_plot(legend, x = 0.07, y = 0.17, width = 0.4, height = 0.4) 
 
 final_map
 ```
